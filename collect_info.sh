@@ -1,7 +1,12 @@
 #!/bin/bash
-# Скрипт сбора информации о VPS для анализа безопасности (расширенная версия + дополнительные проверки)
+# Скрипт сбора информации о VPS для анализа безопасности (совместим с cloud/OVH Ubuntu)
 
 OUTPUT_FILE="server_audit_$(date +%Y%m%d_%H%M%S).txt"
+
+if [ "$EUID" -ne 0 ]; then
+  echo "Пожалуйста, запускайте этот скрипт через sudo или от имени root."
+  exit 1
+fi
 
 echo "=== СБОР ИНФОРМАЦИИ О СЕРВЕРЕ ===" > $OUTPUT_FILE
 echo "Дата: $(date)" >> $OUTPUT_FILE
@@ -69,7 +74,6 @@ echo "=== 8. FAIL2BAN СТАТУС ===" >> $OUTPUT_FILE
 if command -v fail2ban-client &> /dev/null; then
     sudo fail2ban-client status >> $OUTPUT_FILE
     echo "" >> $OUTPUT_FILE
-    # Для каждого jail — только summary, без забаненных адресов
     for jail in $(sudo fail2ban-client status | grep "Jail list" | sed "s/.*://;s/,//g"); do
         echo "--- Jail: $jail ---" >> $OUTPUT_FILE
         sudo fail2ban-client status $jail | grep -E 'Currently banned|Total banned' >> $OUTPUT_FILE
@@ -116,8 +120,8 @@ sudo cat /etc/ssh/sshd_config | grep -v "^#" | grep -v "^$" >> $OUTPUT_FILE
 echo "" >> $OUTPUT_FILE
 
 echo "=== 14. SSH: ПОСЛЕДНИЕ ВХОДЫ ===" >> $OUTPUT_FILE
-echo "--- Успешные входы (last) ---" >> $OUTPUT_FILE
-last -20 >> $OUTPUT_FILE
+echo "--- Последние успешные входы через journalctl ---" >> $OUTPUT_FILE
+journalctl _COMM=sshd | grep "Accepted" | tail -20 >> $OUTPUT_FILE
 echo "" >> $OUTPUT_FILE
 echo "--- Неудачные попытки входа (lastb) ---" >> $OUTPUT_FILE
 sudo lastb -20 2>/dev/null >> $OUTPUT_FILE
@@ -169,6 +173,7 @@ echo "--- Процессы от неизвестных пользователе�
 ps aux | awk '$1 !~ /^(root|systemd|dbus|chrony|polkitd|rpc|xray|sshd|fail2ban)$/ {print}' | head -10 >> $OUTPUT_FILE
 echo "" >> $OUTPUT_FILE
 
+# Дополнительные секции (предложения)
 echo "=== 20. SSH: Вход по root ===" >> $OUTPUT_FILE
 grep "^PermitRootLogin" /etc/ssh/sshd_config >> $OUTPUT_FILE
 echo "" >> $OUTPUT_FILE
