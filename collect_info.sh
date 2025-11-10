@@ -1,5 +1,5 @@
 #!/bin/bash
-# Скрипт сбора информации о VPS для анализа безопасности (расширенная версия)
+# Скрипт сбора информации о VPS для анализа безопасности (расширенная версия + дополнительные проверки)
 
 OUTPUT_FILE="server_audit_$(date +%Y%m%d_%H%M%S).txt"
 
@@ -85,7 +85,6 @@ echo "" >> $OUTPUT_FILE
 echo "=== 9. XRAY/V2RAY КОНФИГУРАЦИЯ ===" >> $OUTPUT_FILE
 if [ -f /usr/local/etc/xray/config.json ]; then
     echo "Найден xray config.json" >> $OUTPUT_FILE
-    # Маскируем чувствительные данные (UUID, пароли, privateKey)
     sudo cat /usr/local/etc/xray/config.json | sed 's/"id": "[^"]*"/"id": "MASKED_UUID"/g' | sed 's/"password": "[^"]*"/"password": "MASKED_PASS"/g' | sed 's/"privateKey": "[^"]*"/"privateKey": "MASKED_KEY"/g' >> $OUTPUT_FILE
 elif [ -f /etc/xray/config.json ]; then
     echo "Найден xray config.json (альтернативный путь)" >> $OUTPUT_FILE
@@ -168,6 +167,41 @@ echo "" >> $OUTPUT_FILE
 echo "=== 19. ПРОВЕРКА НА ПОДОЗРИТЕЛЬНЫЕ ПРОЦЕССЫ ===" >> $OUTPUT_FILE
 echo "--- Процессы от неизвестных пользователей ---" >> $OUTPUT_FILE
 ps aux | awk '$1 !~ /^(root|systemd|dbus|chrony|polkitd|rpc|xray|sshd|fail2ban)$/ {print}' | head -10 >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 20. SSH: Вход по root ===" >> $OUTPUT_FILE
+grep "^PermitRootLogin" /etc/ssh/sshd_config >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 21. ЛОГИ SUDO ===" >> $OUTPUT_FILE
+tail -20 /var/log/auth.log | grep sudo >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 22. СИСТЕМНЫЕ ОШИБКИ И ПРЕДУПРЕЖДЕНИЯ ===" >> $OUTPUT_FILE
+dmesg | tail -20 >> $OUTPUT_FILE
+journalctl -p 3 -xb | tail -20 >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 23. ПОЛЬЗОВАТЕЛИ СИСТЕМЫ ===" >> $OUTPUT_FILE
+cat /etc/passwd | awk -F: '{ print $1": "$7 }' >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 24. SUID/SGID ФАЙЛЫ ===" >> $OUTPUT_FILE
+find / -perm /6000 -type f 2>/dev/null | head -20 >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 25. СЛУШАЮЩИЕ ПРОЦЕССЫ И ВЛАДЕЛЬЦЫ ===" >> $OUTPUT_FILE
+ss -tulnp | awk '{print $1, $5, $6, $7}' >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 26. Скрипты автозапуска ===" >> $OUTPUT_FILE
+ls -la /etc/rc.local 2>/dev/null >> $OUTPUT_FILE
+ls -la /etc/init.d/ 2>/dev/null | head -20 >> $OUTPUT_FILE
+echo "" >> $OUTPUT_FILE
+
+echo "=== 27. Ядро и модули ===" >> $OUTPUT_FILE
+uname -r >> $OUTPUT_FILE
+lsmod | head -20 >> $OUTPUT_FILE
 echo "" >> $OUTPUT_FILE
 
 echo "=== СБОР ЗАВЕРШЁН ===" >> $OUTPUT_FILE
