@@ -1,213 +1,231 @@
-#!/bin/bash
-# Скрипт сбора информации о VPS для анализа безопасности
+# filename: server_audit.sh
+#!/usr/bin/env bash
+# Скрипт безопасного сбора информации о VPS для анализа безопасности
+# Читает системную информацию, НЕ меняет конфигурации и НЕ останавливает сервисы.
+# Маскирует чувствительные поля в конфиге XRAY/V2RAY.
 
-OUTPUT_FILE="server_audit_$(date +%Y%m%d_%H%M%S).txt"
+set -euo pipefail
 
-if [ "$EUID" -ne 0 ]; then
-  echo "Пожалуйста, запускайте этот скрипт через sudo или от имени root."
+# Настройки вывода
+TS="$(date +%Y%m%d_%H%M%S)"
+OUTPUT_FILE="server_audit_${TS}.txt"
+
+# Требуем root для равномерного доступа к логам/конфигам, но не используем 'sudo' внутри
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Пожалуйста, запускайте этот скрипт от root (например: sudo bash server_audit.sh)."
   exit 1
 fi
 
-echo "=== СБОР ИНФОРМАЦИИ О СЕРВЕРЕ ===" > $OUTPUT_FILE
-echo "Дата: $(date)" >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# Функция безопасного выполнения команды с заголовком
+run() {
+  local title="$1"
+  shift
+  {
+    echo "=== ${title} ==="
+    "$@"
+    echo
+  } >> "${OUTPUT_FILE}" 2>&1 || true
+}
 
-echo "=== 1. ИНФОРМАЦИЯ О СИСТЕМЕ ===" >> $OUTPUT_FILE
-uname -a >> $OUTPUT_FILE
-cat /etc/os-release >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "Uptime и загрузка:" >> $OUTPUT_FILE
-uptime >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# Начало файла
+echo "=== СБОР ИНФОРМАЦИИ О СЕРВЕРЕ ===" > "${OUTPUT_FILE}"
+echo "Дата: $(date)" >> "${OUTPUT_FILE}"
+echo >> "${OUTPUT_FILE}"
 
-echo "=== 2. ИСПОЛЬЗОВАНИЕ РЕСУРСОВ ===" >> $OUTPUT_FILE
-echo "--- Память ---" >> $OUTPUT_FILE
-free -h >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- Диск ---" >> $OUTPUT_FILE
-df -h >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- CPU загрузка (последние 5 процессов) ---" >> $OUTPUT_FILE
-ps aux --sort=-%cpu | head -6 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 1. Информация о системе
+run "1. ИНФОРМАЦИЯ О СИСТЕМЕ (uname/os-release/uptime)" bash -c 'uname -a; echo; cat /etc/os-release; echo; echo "Uptime и загрузка:"; uptime'
 
-echo "=== 3. СЕТЕВЫЕ ИНТЕРФЕЙСЫ ===" >> $OUTPUT_FILE
-ip addr show >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 2. Использование ресурсов
+run "2. ИСПОЛЬЗОВАНИЕ РЕСУРСОВ — память" free -h
+run "2. ИСПОЛЬЗОВАНИЕ РЕСУРСОВ — диск" df -h
+run "2. ИСПОЛЬЗОВАНИЕ РЕСУРСОВ — CPU топ 5" bash -c 'ps aux --sort=-%cpu | head -6'
 
-echo "=== 4. ОТКРЫТЫЕ ПОРТЫ ===" >> $OUTPUT_FILE
-ss -tulpn >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 3. Сетевые интерфейсы
+run "3. СЕТЕВЫЕ ИНТЕРФЕЙСЫ (ip addr show)" ip addr show
 
-echo "=== 5. ПРАВИЛА FIREWALL (iptables) ===" >> $OUTPUT_FILE
-echo "--- INPUT chain (основные правила) ---" >> $OUTPUT_FILE
-sudo iptables -L INPUT -n -v --line-numbers | head -30 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- FORWARD chain (основные правила) ---" >> $OUTPUT_FILE
-sudo iptables -L FORWARD -n -v --line-numbers | head -30 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- OUTPUT chain (основные правила) ---" >> $OUTPUT_FILE
-sudo iptables -L OUTPUT -n -v --line-numbers | head -30 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- Статистика fail2ban цепочек (без списка IP) ---" >> $OUTPUT_FILE
-sudo iptables -L -n -v | grep -E '^Chain f2b-|^[0-9]' | grep -v 'DROP.*all' | head -50 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 4. Открытые порты
+# ss может зависать при больших таблицах — ограничим таймаут через timeout, если доступен
+if command -v timeout >/dev/null 2>&1; then
+  run "4. ОТКРЫТЫЕ ПОРТЫ (ss -tulpn)" timeout 5s ss -tulpn
+else
+  run "4. ОТКРЫТЫЕ ПОРТЫ (ss -tulpn)" ss -tulpn
+fi
 
-echo "=== 6. ПРАВИЛА FIREWALL (firewalld если активен) ===" >> $OUTPUT_FILE
+# 5. Правила firewall (iptables)
+# Не используем sudo внутри; показываем первые 50 строк для читабельности
+run "5. IPTABLES — INPUT (первые 50 правил)" bash -c 'iptables -L INPUT -n -v --line-numbers | head -50'
+run "5. IPTABLES — FORWARD (первые 50 правил)" bash -c 'iptables -L FORWARD -n -v --line-numbers | head -50'
+run "5. IPTABLES — OUTPUT (первые 50 правил)" bash -c 'iptables -L OUTPUT -n -v --line-numbers | head -50'
+run "5. IPTABLES — fail2ban цепочки (обзор)" bash -c 'iptables -L -n -v | grep -E "^Chain f2b-|^[0-9]" | head -100'
+
+# 6. Firewalld (если активен)
 if systemctl is-active --quiet firewalld; then
-    echo "Firewalld активен:" >> $OUTPUT_FILE
-    firewall-cmd --list-all >> $OUTPUT_FILE
+  run "6. FIREWALLD — list-all" firewall-cmd --list-all
 else
-    echo "firewalld не активен" >> $OUTPUT_FILE
+  echo "=== 6. FIREWALLD ===" >> "${OUTPUT_FILE}"
+  echo "firewalld не активен" >> "${OUTPUT_FILE}"
+  echo >> "${OUTPUT_FILE}"
 fi
-echo "" >> $OUTPUT_FILE
 
-echo "=== 7. ПРАВИЛА FIREWALL (ufw если установлен) ===" >> $OUTPUT_FILE
-if command -v ufw &> /dev/null; then
-    sudo ufw status verbose >> $OUTPUT_FILE
+# 7. UFW (если установлен)
+if command -v ufw >/dev/null 2>&1; then
+  run "7. UFW — status verbose" ufw status verbose
 else
-    echo "ufw не установлен" >> $OUTPUT_FILE
+  echo "=== 7. UFW ===" >> "${OUTPUT_FILE}"
+  echo "ufw не установлен" >> "${OUTPUT_FILE}"
+  echo >> "${OUTPUT_FILE}"
 fi
-echo "" >> $OUTPUT_FILE
 
-echo "=== 8. FAIL2BAN СТАТУС ===" >> $OUTPUT_FILE
-if command -v fail2ban-client &> /dev/null; then
-    sudo fail2ban-client status >> $OUTPUT_FILE
-    echo "" >> $OUTPUT_FILE
-    for jail in $(sudo fail2ban-client status | grep "Jail list" | sed "s/.*://;s/,//g"); do
-        echo "--- Jail: $jail ---" >> $OUTPUT_FILE
-        sudo fail2ban-client status $jail | grep -E 'Currently banned|Total banned' >> $OUTPUT_FILE
-    done
-    echo "" >> $OUTPUT_FILE
-    echo "--- Последние 10 событий fail2ban ---" >> $OUTPUT_FILE
-    tail -20 /var/log/fail2ban.log 2>/dev/null | grep -i "ban" >> $OUTPUT_FILE
+# 8. Fail2ban статус
+if command -v fail2ban-client >/dev/null 2>&1; then
+  run "8. FAIL2BAN — общий статус" fail2ban-client status
+  # Список jail-ов
+  JAILS="$(fail2ban-client status | awk -F: '/Jail list/{print $2}' | tr -d '[:space:]' | tr ',' ' ')"
+  for jail in ${JAILS}; do
+    run "8. FAIL2BAN — Jail: ${jail}" bash -c "fail2ban-client status ${jail} | grep -E 'Currently banned|Total banned' || true"
+  done
+  run "8. FAIL2BAN — последние события (ban) из /var/log/fail2ban.log" bash -c 'tail -200 /var/log/fail2ban.log 2>/dev/null | grep -i "ban" | tail -20'
 else
-    echo "fail2ban не установлен" >> $OUTPUT_FILE
+  echo "=== 8. FAIL2BAN ===" >> "${OUTPUT_FILE}"
+  echo "fail2ban не установлен" >> "${OUTPUT_FILE}"
+  echo >> "${OUTPUT_FILE}"
 fi
-echo "" >> $OUTPUT_FILE
 
-echo "=== 9. XRAY/V2RAY КОНФИГУРАЦИЯ ===" >> $OUTPUT_FILE
-if [ -f /usr/local/etc/xray/config.json ]; then
-    echo "Найден xray config.json" >> $OUTPUT_FILE
-    sudo cat /usr/local/etc/xray/config.json | sed 's/"id": "[^"]*"/"id": "MASKED_UUID"/g' | sed 's/"password": "[^"]*"/"password": "MASKED_PASS"/g' | sed 's/"privateKey": "[^"]*"/"privateKey": "MASKED_KEY"/g' >> $OUTPUT_FILE
-elif [ -f /etc/xray/config.json ]; then
-    echo "Найден xray config.json (альтернативный путь)" >> $OUTPUT_FILE
-    sudo cat /etc/xray/config.json | sed 's/"id": "[^"]*"/"id": "MASKED_UUID"/g' | sed 's/"password": "[^"]*"/"password": "MASKED_PASS"/g' | sed 's/"privateKey": "[^"]*"/"privateKey": "MASKED_KEY"/g' >> $OUTPUT_FILE
-else
-    echo "xray конфигурация не найдена в стандартных путях" >> $OUTPUT_FILE
-fi
-echo "" >> $OUTPUT_FILE
-
-echo "=== 10. КЛЮЧЕВЫЕ СЕРВИСЫ ===" >> $OUTPUT_FILE
-echo "Проверка важных для безопасности сервисов:" >> $OUTPUT_FILE
-for service in ssh sshd xray v2ray fail2ban ufw iptables firewalld cockpit; do
-    if systemctl is-active --quiet $service 2>/dev/null; then
-        echo "✓ $service - АКТИВЕН" >> $OUTPUT_FILE
-    fi
+# 9. XRAY/V2RAY конфигурация с маскировкой секретов
+mask_json() {
+  sed -E \
+    -e 's/"id": *"[^"]*"/"id": "MASKED_UUID"/g' \
+    -e 's/"password": *"[^"]*"/"password": "MASKED_PASS"/g' \
+    -e 's/"privateKey": *"[^"]*"/"privateKey": "MASKED_KEY"/g' \
+    -e 's/"seed": *"[^"]*"/"seed": "MASKED_SEED"/g' \
+    -e 's/"cert": *"[^"]*"/"cert": "MASKED_CERT"/g' \
+    -e 's/"user": *"[^"]*"/"user": "MASKED_USER"/g'
+}
+XRAY_PATHS=(
+  "/usr/local/etc/xray/config.json"
+  "/etc/xray/config.json"
+  "/usr/local/etc/v2ray/config.json"
+  "/etc/v2ray/config.json"
+)
+FOUND_XRAY="нет"
+for p in "${XRAY_PATHS[@]}"; do
+  if [[ -f "${p}" ]]; then
+    FOUND_XRAY="да (${p})"
+    {
+      echo "=== 9. XRAY/V2RAY КОНФИГУРАЦИЯ — найден: ${p} (секреты маскированы) ==="
+      mask_json < "${p}"
+      echo
+    } >> "${OUTPUT_FILE}"
+  fi
 done
-echo "" >> $OUTPUT_FILE
+if [[ "${FOUND_XRAY}" == "нет" ]]; then
+  echo "=== 9. XRAY/V2RAY КОНФИГУРАЦИЯ ===" >> "${OUTPUT_FILE}"
+  echo "xray/v2ray конфигурация не найдена в стандартных путях" >> "${OUTPUT_FILE}"
+  echo >> "${OUTPUT_FILE}"
+fi
 
-echo "=== 11. АВТОЗАПУСК СЕРВИСОВ (enabled) ===" >> $OUTPUT_FILE
-systemctl list-unit-files --state=enabled --type=service | grep -E 'ssh|xray|fail2ban|firewall|cockpit' >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 10. Ключевые сервисы (активность)
+SERVICES=(ssh sshd xray v2ray fail2ban ufw iptables firewalld cockpit)
+{
+  echo "=== 10. КЛЮЧЕВЫЕ СЕРВИСЫ ==="
+  echo "Проверка важных для безопасности сервисов:"
+  for service in "${SERVICES[@]}"; do
+    if systemctl is-active --quiet "${service}" 2>/dev/null; then
+      echo "✓ ${service} — АКТИВЕН"
+    else
+      echo "• ${service} — не активен"
+    fi
+  done
+  echo
+} >> "${OUTPUT_FILE}"
 
-echo "=== 12. АКТИВНЫЕ СОЕДИНЕНИЯ ===" >> $OUTPUT_FILE
-ss -tun | head -20 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 11. Автозапуск (enabled)
+run "11. АВТОЗАПУСК СЕРВИСОВ (enabled)" bash -c "systemctl list-unit-files --state=enabled --type=service | grep -E 'ssh|xray|v2ray|fail2ban|firewall|cockpit' || true"
 
-echo "=== 13. SSH КОНФИГУРАЦИЯ ===" >> $OUTPUT_FILE
-sudo cat /etc/ssh/sshd_config | grep -v "^#" | grep -v "^$" >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 12. Активные соединения
+run "12. АКТИВНЫЕ СОЕДИНЕНИЯ (ss -tun, топ-20)" bash -c 'ss -tun | head -20'
 
-echo "=== 14. SSH: ПОСЛЕДНИЕ ВХОДЫ ===" >> $OUTPUT_FILE
-echo "--- Последние успешные входы через journalctl ---" >> $OUTPUT_FILE
-journalctl _COMM=sshd | grep "Accepted" | tail -20 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- Неудачные попытки входа (lastb) ---" >> $OUTPUT_FILE
-sudo lastb -20 2>/dev/null >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 13. SSH конфигурация (без комментариев/пустых строк)
+run "13. SSHD_CONFIG (очищено от комментариев)" bash -c 'grep -vE "^[[:space:]]*#|^[[:space:]]*$" /etc/ssh/sshd_config || true'
 
-echo "=== 15. ПОЛЬЗОВАТЕЛИ С ПРАВАМИ SUDO ===" >> $OUTPUT_FILE
-echo "--- Группа wheel/sudo ---" >> $OUTPUT_FILE
-getent group wheel sudo 2>/dev/null >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- Sudoers файлы ---" >> $OUTPUT_FILE
-ls -la /etc/sudoers.d/ 2>/dev/null >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 14. SSH: последние входы
+run "14. SSH — Accepted (journalctl последние 200, затем хвост 20)" bash -c 'journalctl _COMM=sshd --no-pager 2>/dev/null | grep "Accepted" | tail -20'
+run "14. SSH — Неудачные попытки (lastb -20)" bash -c 'lastb -20 2>/dev/null || true'
 
-echo "=== 16. SSH АВТОРИЗОВАННЫЕ КЛЮЧИ (root) ===" >> $OUTPUT_FILE
-if [ -f /root/.ssh/authorized_keys ]; then
-    echo "Количество ключей у root:" >> $OUTPUT_FILE
-    wc -l /root/.ssh/authorized_keys >> $OUTPUT_FILE
-    echo "Fingerprints:" >> $OUTPUT_FILE
-    ssh-keygen -lf /root/.ssh/authorized_keys 2>/dev/null >> $OUTPUT_FILE
+# 15. Пользователи с правами sudo
+run "15. SUDO группы (wheel/sudo)" bash -c 'getent group wheel sudo 2>/dev/null || true'
+run "15. SUDOERS файлы (/etc/sudoers.d)" bash -c 'ls -la /etc/sudoers.d/ 2>/dev/null || true'
+
+# 16. SSH authorized_keys (root)
+if [[ -f /root/.ssh/authorized_keys ]]; then
+  {
+    echo "=== 16. SSH AUTHORIZED_KEYS (root) ==="
+    echo "Количество ключей у root:"
+    wc -l /root/.ssh/authorized_keys
+    echo "Fingerprints:"
+    ssh-keygen -lf /root/.ssh/authorized_keys 2>/dev/null || true
+    echo
+  } >> "${OUTPUT_FILE}"
 else
-    echo "Файл authorized_keys для root не найден" >> $OUTPUT_FILE
+  echo "=== 16. SSH AUTHORIZED_KEYS (root) ===" >> "${OUTPUT_FILE}"
+  echo "Файл authorized_keys для root не найден" >> "${OUTPUT_FILE}"
+  echo >> "${OUTPUT_FILE}"
 fi
-echo "" >> $OUTPUT_FILE
 
-echo "=== 17. CRON ЗАДАЧИ ===" >> $OUTPUT_FILE
-echo "--- Root crontab ---" >> $OUTPUT_FILE
-crontab -l 2>/dev/null >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
-echo "--- Системные cron.d ---" >> $OUTPUT_FILE
-ls -la /etc/cron.d/ 2>/dev/null >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 17. Cron задачи
+run "17. Root crontab" bash -c 'crontab -l 2>/dev/null || true'
+run "17. Системные cron.d" bash -c 'ls -la /etc/cron.d/ 2>/dev/null || true'
 
-echo "=== 18. ОБНОВЛЕНИЯ СИСТЕМЫ ===" >> $OUTPUT_FILE
-if command -v apt &> /dev/null; then
-    UPDATE_COUNT=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
-    echo "Доступно обновлений: $UPDATE_COUNT" >> $OUTPUT_FILE
-    echo "Критические обновления безопасности:" >> $OUTPUT_FILE
-    apt list --upgradable 2>/dev/null | grep -i security | head -10 >> $OUTPUT_FILE
-elif command -v yum &> /dev/null; then
-    UPDATE_COUNT=$(yum check-update 2>/dev/null | grep -c "^[a-zA-Z]")
-    echo "Доступно обновлений: $UPDATE_COUNT" >> $OUTPUT_FILE
-    echo "Критические обновления безопасности:" >> $OUTPUT_FILE
-    yum updateinfo list security 2>/dev/null | head -10 >> $OUTPUT_FILE
+# 18. Обновления системы
+if command -v apt >/dev/null 2>&1; then
+  run "18. APT — доступные обновления" bash -c 'apt update -o Dir::Etc::sourcelist=/etc/apt/sources.list -o Dir::Etc::sourceparts=/etc/apt/sources.list.d/ -o DPkg::Lock::Timeout=30 >/dev/null 2>&1 || true; apt list --upgradable 2>/dev/null | sed "1d"'
+  run "18. APT — security (по названию)" bash -c 'apt list --upgradable 2>/dev/null | grep -i security || true'
+elif command -v yum >/dev/null 2>&1; then
+  run "18. YUM — доступные обновления" bash -c 'yum check-update 2>/dev/null || true'
+  run "18. YUM — security" bash -c 'yum updateinfo list security 2>/dev/null || true'
+else
+  echo "=== 18. ОБНОВЛЕНИЯ СИСТЕМЫ ===" >> "${OUTPUT_FILE}"
+  echo "Менеджер пакетов (apt/yum) не найден" >> "${OUTPUT_FILE}"
+  echo >> "${OUTPUT_FILE}"
 fi
-echo "" >> $OUTPUT_FILE
 
-echo "=== 19. ПРОВЕРКА НА ПОДОЗРИТЕЛЬНЫЕ ПРОЦЕССЫ ===" >> $OUTPUT_FILE
-echo "--- Процессы от неизвестных пользователей ---" >> $OUTPUT_FILE
-ps aux | awk '$1 !~ /^(root|systemd|dbus|chrony|polkitd|rpc|xray|sshd|fail2ban)$/ {print}' | head -10 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 19. Подозрительные процессы
+run "19. ПОДОЗРИТЕЛЬНЫЕ ПРОЦЕССЫ (фильтр популярных системных)" bash -c 'ps aux | awk '\''$1 !~ /^(root|systemd|dbus|chrony|polkitd|rpc|xray|sshd|fail2ban|www-data|nginx|postgres|mysql|grafana|prometheus)$/ {print}'\'' | head -20'
 
-# Дополнительные секции (предложения)
-echo "=== 20. SSH: Вход по root ===" >> $OUTPUT_FILE
-grep "^PermitRootLogin" /etc/ssh/sshd_config >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 20. SSH: PermitRootLogin
+run "20. SSH — PermitRootLogin" bash -c 'grep -E "^PermitRootLogin" /etc/ssh/sshd_config || true'
 
-echo "=== 21. ЛОГИ SUDO ===" >> $OUTPUT_FILE
-tail -20 /var/log/auth.log | grep sudo >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 21. Логи sudo
+run "21. ЛОГИ SUDO (auth.log хвост)" bash -c 'tail -200 /var/log/auth.log 2>/dev/null | grep sudo | tail -20 || true'
 
-echo "=== 22. СИСТЕМНЫЕ ОШИБКИ И ПРЕДУПРЕЖДЕНИЯ ===" >> $OUTPUT_FILE
-dmesg | tail -20 >> $OUTPUT_FILE
-journalctl -p 3 -xb | tail -20 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 22. Системные ошибки/предупреждения
+run "22. DMESG хвост-20" bash -c 'dmesg | tail -20 || true'
+run "22. JOURNALCTL — приоритет 3 (ошибки) хвост-20" bash -c 'journalctl -p 3 -xb --no-pager 2>/dev/null | tail -20 || true'
 
-echo "=== 23. ПОЛЬЗОВАТЕЛИ СИСТЕМЫ ===" >> $OUTPUT_FILE
-cat /etc/passwd | awk -F: '{ print $1": "$7 }' >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 23. Пользователи системы
+run "23. /etc/passwd (логин и shell)" bash -c 'awk -F: '\''{ print $1": "$7 }'\'' /etc/passwd'
 
-echo "=== 24. SUID/SGID ФАЙЛЫ ===" >> $OUTPUT_FILE
-find / -perm /6000 -type f 2>/dev/null | head -20 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 24. SUID/SGID файлы
+# Ограничим глубину: исключим большие каталоги, чтобы не зависнуть, и ограничим вывод
+run "24. SUID/SGID файлы (топ-20)" bash -c 'find / -xdev -perm /6000 -type f 2>/dev/null | head -20'
 
-echo "=== 25. СЛУШАЮЩИЕ ПРОЦЕССЫ И ВЛАДЕЛЬЦЫ ===" >> $OUTPUT_FILE
-ss -tulnp | awk '{print $1, $5, $6, $7}' >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 25. Слушающие процессы и владельцы (сжатый вывод)
+run "25. СЛУШАЮЩИЕ ПРОЦЕССЫ (ss кратко)" bash -c 'ss -tulnp | awk '\''{print $1, $5, $6, $7}'\'' | head -100'
 
-echo "=== 26. Скрипты автозапуска ===" >> $OUTPUT_FILE
-ls -la /etc/rc.local 2>/dev/null >> $OUTPUT_FILE
-ls -la /etc/init.d/ 2>/dev/null | head -20 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 26. Скрипты автозапуска
+run "26. Автозапуск — /etc/rc.local" bash -c 'ls -la /etc/rc.local 2>/dev/null || true'
+run "26. Автозапуск — /etc/init.d (топ-20)" bash -c 'ls -la /etc/init.d/ 2>/dev/null | head -20 || true'
 
-echo "=== 27. Ядро и модули ===" >> $OUTPUT_FILE
-uname -r >> $OUTPUT_FILE
-lsmod | head -20 >> $OUTPUT_FILE
-echo "" >> $OUTPUT_FILE
+# 27. Ядро и модули
+run "27. Ядро (uname -r)" uname -r
+run "27. Модули ядра (lsmod топ-20)" bash -c 'lsmod | head -20 || true'
 
-echo "=== СБОР ЗАВЕРШЁН ===" >> $OUTPUT_FILE
-echo "Файл сохранён: $OUTPUT_FILE"
+# Завершение
+{
+  echo "=== СБОР ЗАВЕРШЁН ==="
+  echo "Файл сохранён: ${OUTPUT_FILE}"
+} >> "${OUTPUT_FILE}"
+
+# Дополнительно: подсказка по упаковке результата
+echo "Файл сохранён: ${OUTPUT_FILE}"
+echo "Чтобы отправить отчёт, можно упаковать: tar -czf ${OUTPUT_FILE%.txt}.tar.gz ${OUTPUT_FILE}"
