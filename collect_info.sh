@@ -2,6 +2,7 @@
 #!/usr/bin/env bash
 # Безопасный сбор информации о VPS для анализа безопасности
 # Обновлено: вынесен список SAFE_USERS, расширен XRAY-поиск, улучшен отчёт authorized_keys
+# Исправлено: 'done' вместо ошибочного 'end' в цикле services
 
 set -euo pipefail
 
@@ -125,7 +126,7 @@ SERVICES=(ssh sshd xray v2ray fail2ban ufw iptables firewalld cockpit)
     else
       echo "• ${service} — не активен"
     fi
-  end
+  done
   echo
 } >> "${OUTPUT_FILE}"
 
