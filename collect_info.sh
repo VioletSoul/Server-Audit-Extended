@@ -1,5 +1,5 @@
 #!/bin/bash
-# Скрипт сбора информации о VPS для анализа безопасности (совместим с cloud/OVH Ubuntu)
+# Скрипт сбора информации о VPS для анализа безопасности
 
 OUTPUT_FILE="server_audit_$(date +%Y%m%d_%H%M%S).txt"
 
