@@ -1,4 +1,4 @@
-# Server Audit Script
+# Server Audit Extended
 
 ![Bash](https://img.shields.io/badge/Bash-4EAA25?style=flat&logo=gnu-bash&logoColor=white)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-FF6600?style=flat&logo=ubuntu&logoColor=white)
