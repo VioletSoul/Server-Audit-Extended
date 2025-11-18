@@ -9,7 +9,7 @@
 [![Stars](https://img.shields.io/github/stars/VioletSoul/server-audit.svg?style=social)](https://github.com/VioletSoul/server-audit)
 [![Last Commit](https://img.shields.io/github/last-commit/VioletSoul/server-audit.svg)](https://github.com/VioletSoul/server-audit/commits/main)
 
-**Server Audit Script** is a Bash script for comprehensive Linux server auditing, gathering system info, resource stats, network settings, firewall status, and security logs.
+**Server Audit Extended Script** is a Bash script for comprehensive Linux server auditing, gathering system info, resource stats, network settings, firewall status, and security logs.
 
 ---
 
