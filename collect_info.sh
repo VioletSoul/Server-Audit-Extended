@@ -9,6 +9,9 @@
 # - Extended SSH hardening checks
 # - Fixed numbering of sections
 # - Added JSON summary output for automated parsing
+# - Fixed awk parsing for fail2ban banned count
+# - Fixed unbound variable issue with $1 in suspicious processes block
+# - Fixed quoting in listening processes block
 
 set -euo pipefail  # Strict error handling: exit on error, unset variables, and pipefail
 
@@ -22,7 +25,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-# Helper to run a command with optional timeout (not used in JSON directly, но полезен)
+# Helper to run a command with optional timeout
 run_cmd_with_timeout() {
   local timeout_sec="$1"
   shift
@@ -41,7 +44,7 @@ run() {
     echo "=== ${title} ==="
     "$@"
     echo
-  } >> "${OUTPUT_FILE}" 2>&1 || true  # Always append, ignore individual command errors
+  } >> "${OUTPUT_FILE}" 2>&1 || true
 }
 
 # --- JSON helper variables ---
@@ -132,26 +135,24 @@ fi
 # 9. Fail2ban status and jail breakdown, including recent bans
 if command -v fail2ban-client >/dev/null 2>&1; then
   JSON_FAIL2BAN_INSTALLED="true"
-  # Collect jails & banned count for JSON
   F2B_STATUS="$(fail2ban-client status 2>/dev/null || true)"
   run "9. FAIL2BAN — overall status" bash -c 'fail2ban-client status'
   JAILS="$(echo "${F2B_STATUS}" | awk -F: '/Jail list/{print $2}' | tr -d "[:space:]" | tr "," " ")"
-  # JSON array of jails
+
   if [[ -n "${JAILS}" ]]; then
     jlist=""
     for jail in ${JAILS}; do
-      # collect banned count for this jail
       JSTAT="$(fail2ban-client status "${jail}" 2>/dev/null || true)"
-      BANNED="$(echo "${JSTAT}" | awk -F: '/Currently banned/ {gsub(/^[[:space:]]+/,\"\",$2); print $2}' | tr -d '[:space:]')"
+      BANNED="$(echo "${JSTAT}" | awk -F':' '/Currently banned/ {print $2}' | tr -d '[:space:]')"
       if [[ -n "${BANNED}" ]]; then
         JSON_FAIL2BAN_BANNED_TOTAL=$(( JSON_FAIL2BAN_BANNED_TOTAL + BANNED ))
       fi
       jlist="${jlist}\"${jail}\","
       run "9. FAIL2BAN — Jail: ${jail}" bash -c "fail2ban-client status ${jail} | grep -E 'Currently banned|Total banned' || true"
     done
-    # trim trailing comma
     JSON_FAIL2BAN_JAILS="[$(echo "${jlist}" | sed 's/,$//')]"
   fi
+
   run "9. FAIL2BAN — recent ban events" bash -c 'tail -200 /var/log/fail2ban.log 2>/dev/null | grep -i "ban" | tail -20'
 else
   {
@@ -234,7 +235,6 @@ run "15. SSHD_CONFIG (comments removed)" bash -c 'grep -vE "^[[:space:]]*#|^[[:s
 # 16. SSH hardening checks (PermitRootLogin, PasswordAuthentication, etc.) + JSON extraction
 SSH_CFG="/etc/ssh/sshd_config"
 if [[ -f "${SSH_CFG}" ]]; then
-  # Extract key settings for JSON (last occurrence wins)
   JSON_SSH_PERMIT_ROOT="$(awk 'BEGIN{IGNORECASE=1} /^[[:space:]]*#/ {next} /PermitRootLogin/ {val=$2} END{print val}' "${SSH_CFG}" 2>/dev/null || true)"
   JSON_SSH_PASSWORD_AUTH="$(awk 'BEGIN{IGNORECASE=1} /^[[:space:]]*#/ {next} /PasswordAuthentication/ {val=$2} END{print val}' "${SSH_CFG}" 2>/dev/null || true)"
   JSON_SSH_PORT="$(awk 'BEGIN{IGNORECASE=1} /^[[:space:]]*#/ {next} /^Port[[:space:]]+/ {val=$2} END{print val}' "${SSH_CFG}" 2>/dev/null || true)"
@@ -280,7 +280,7 @@ run "18. SUDOERS files (/etc/sudoers.d)" bash -c 'ls -la /etc/sudoers.d/ 2>/dev/
 if [[ -f /root/.ssh/authorized_keys ]]; then
   {
     echo "=== 19. SSH AUTHORIZED_KEYS (root) ==="
-    echo "File metadata:"
+    echo "File meta"
     stat -c "Path: %n | Size: %s | Owner: %U:%G | Mode: %a | MTime: %y" /root/.ssh/authorized_keys 2>/dev/null || ls -l /root/.ssh/authorized_keys
     echo "Number of keys:"
     wc -l /root/.ssh/authorized_keys
@@ -320,7 +320,11 @@ fi
 # 22. List of SAFE USERS taken out of regex, search for suspicious processes
 DEFAULT_SAFE_USERS_REGEX='^(root|systemd|dbus|messagebus|chrony|polkitd|rpc|sshd|fail2ban|www-data|nginx|postgres|mysql|grafana|prometheus|systemd-resolve|systemd-timesync|systemd-network|syslog|smart)$'
 SAFE_USERS_REGEX="${SAFE_USERS_REGEX:-$DEFAULT_SAFE_USERS_REGEX}"
-run "22. SUSPICIOUS PROCESSES (excluding SAFE users)" bash -c "ps aux | awk '\\$1 !~ /${SAFE_USERS_REGEX}/ {print}' | head -30"
+run "22. SUSPICIOUS PROCESSES (excluding SAFE users)" bash -c "
+  ps aux | awk '
+    !(\$1 ~ /${SAFE_USERS_REGEX}/) {print}
+  ' | head -30
+"
 
 # 23. SSH PermitRootLogin settings (security check)
 run "23. SSH — PermitRootLogin" bash -c 'grep -E "^[[:space:]]*PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null || echo "PermitRootLogin not explicitly set (default may apply)"'
@@ -339,7 +343,13 @@ run "26. /etc/passwd (login and shell)" bash -c "awk -F: '{ print \$1\": \"\$7 }
 run "27. SUID/SGID files (top 20)" bash -c 'command -v timeout >/dev/null 2>&1 && timeout 10s find / -xdev -perm /6000 -type f 2>/dev/null || find / -xdev -perm /6000 -type f 2>/dev/null | head -20'
 
 # 28. Listening processes (ss summary), top 100 lines
-run "28. LISTENING PROCESSES (ss brief)" bash -c '"'"'command -v timeout >/dev/null 2>&1 && timeout 5s ss -tulnp || ss -tulnp | awk "{print $1, $5, $6, $7}" | head -100'"'"''
+run "28. LISTENING PROCESSES (ss brief)" bash -c '
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5s ss -tulnp
+  else
+    ss -tulnp
+  fi | awk "{print \$1, \$5, \$6, \$7}" | head -100
+'
 
 # 29. Autostart scripts: /etc/rc.local and /etc/init.d
 run "29. Autostart — /etc/rc.local" bash -c 'ls -la /etc/rc.local 2>/dev/null || true'
