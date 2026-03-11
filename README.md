@@ -13,14 +13,16 @@
 
 ---
 
-## Main Features
+## Key Features
 
-- Collects system and Linux kernel information
-- Monitors CPU, memory, and disk usage
-- Lists active network interfaces and open ports
-- Checks UFW rules and Fail2Ban status
-- Collects sshd logs and suspicious activity
-- Generates a timestamped text audit report
+- ✅ Collects system metadata: OS, kernel, uptime, and hardware info
+- ✅ Monitors CPU, memory, and disk usage for performance analysis
+- ✅ Lists active network interfaces and all listening ports
+- ✅ Audits firewall configurations: **iptables**, **nftables**, **UFW**, **firewalld**
+- ✅ Checks **Fail2Ban** status and banned IPs
+- ✅ Analyzes SSH configuration and logs for suspicious activity
+- ✅ Generates **timestamped audit reports** in both human-readable text and JSON for automated parsing
+- ✅ Masks sensitive data (keys, passwords) in configuration files for safe sharing
 
 ---
 
