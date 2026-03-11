@@ -49,10 +49,14 @@ chmod +x collect_info.sh
 ```
 sudo ./collect_info.sh
 ```
-4. The audit report will be generated in the current directory with a timestamped filename like `server_audit_YYYYMMDD_HHMMSS.txt`
-5. To copy the report to your local machine (MacBook), use:  
+4. Audit report (the script generates two files in the current directory with timestamped filenames)
 ```
-scp user@server:~/server_audit_YYYYMMDD_HHMMSS.txt ~/Downloads/
+Plain text report: server_audit_YYYYMMDD_HHMMSS.txt
+JSON report: server_audit_YYYYMMDD_HHMMSS.json
+```
+5. To copy the report to your local machine (MacBook), use:  
+```bash
+scp 'root@server:~/server_audit_*' ~/Downloads/
 ```
 
 ---

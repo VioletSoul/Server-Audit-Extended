@@ -52,12 +52,14 @@ chmod +x collect_info.sh
 sudo ./collect_info.sh
 ```
 
-4. Отчёт будет создан в текущем каталоге под именем вида  
-   `server_audit_YYYYMMDD_HHMMSS.txt`
-
+4. Отчёт аудита (скрипт создаёт два файла в текущей директории с отметкой времени в имени)  
+```   
+Отчёт в виде обычного текста: server_audit_YYYYMMDD_HHMMSS.txt
+Отчёт в формате JSON: server_audit_YYYYMMDD_HHMMSS.json
+```
 5. Чтобы скачать отчёт на локальную машину (MacBook):
 ```bash
-scp user@server:~/server_audit_YYYYMMDD_HHMMSS.txt ~/Downloads/
+scp 'root@server:~/server_audit_*' ~/Downloads/
 ```
 
 ---
